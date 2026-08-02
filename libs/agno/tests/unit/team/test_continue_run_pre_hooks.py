@@ -375,3 +375,30 @@ def test_team_continue_run_stream_emits_pre_hook_events(monkeypatch):
     event_names = [type(e).__name__ for e in events]
     assert any("PreHookStarted" in name for name in event_names), event_names
     assert any("PreHookCompleted" in name for name in event_names), event_names
+
+
+def test_unregistered_blocking_hook_does_not_autofire_on_continue(monkeypatch):
+    """Same contract on Team continue paths: an unregistered raising hook does
+    not gate the resume. The contract is fail-closed by default — gates require
+    BaseGuardrail registration or @hook(run_on_continue=True)."""
+    model_calls = _patch_team_sync_model(monkeypatch)
+
+    def unregistered_blocking_hook(run_input=None):
+        raise InputCheckError("unregistered hook should never run on continue")
+
+    team = Team(name="unregistered-blocker-team", members=[], pre_hooks=[unregistered_blocking_hook])
+    monkeypatch.setattr(team_run, "_cleanup_and_store", lambda *a, **k: None)
+    monkeypatch.setattr(team_telemetry, "log_team_telemetry", lambda *a, **k: None)
+
+    result = team_run._continue_run(
+        team,
+        run_response=_make_paused_team_run(),
+        run_messages=_make_run_messages(),
+        run_context=_make_run_context(),
+        tools=[],
+        session=_make_team_session(),
+        user_id="user-1",
+    )
+
+    assert result.status == RunStatus.completed
+    assert model_calls == [1]

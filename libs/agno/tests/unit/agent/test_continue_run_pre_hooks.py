@@ -579,3 +579,36 @@ def test_decorator_async_hook():
         pass
 
     assert should_run_on_continue(async_hook) is True
+
+
+def test_unregistered_blocking_hook_does_not_autofire_on_continue(monkeypatch):
+    """A plain function that raises InputCheckError but is neither a registered
+    BaseGuardrail nor decorated with @hook(run_on_continue=True) must NOT
+    auto-fire on continue_run.
+
+    Filtering precedes invocation: hook behavior cannot turn an unregistered
+    callable into a gate. The contract is fail-closed and explicit — a gate on
+    resume must be expressed as a BaseGuardrail (auto-fires) or explicitly
+    opted in via the decorator.
+    """
+    model_calls = _patch_sync_model(monkeypatch)
+
+    def unregistered_blocking_hook(run_input=None):
+        raise InputCheckError("unregistered hook should never run on continue")
+
+    agent = Agent(name="unregistered-blocker-agent", pre_hooks=[unregistered_blocking_hook])
+    monkeypatch.setattr(agent_run, "cleanup_and_store", lambda *a, **k: None)
+    monkeypatch.setattr(agent_telemetry, "log_agent_telemetry", lambda *a, **k: None)
+
+    result = agent_run._continue_run(
+        agent,
+        run_response=_make_paused_run(),
+        run_messages=_make_run_messages(),
+        run_context=_make_run_context(),
+        session=_make_session(),
+        tools=[],
+        user_id="user-1",
+    )
+
+    assert result.status == RunStatus.completed, "run should proceed — unregistered hooks are filtered out"
+    assert model_calls == [1], "model runs: an unregistered raising hook does not gate continue_run"
